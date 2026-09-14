@@ -370,6 +370,79 @@ class TestChartApi(ApiEditorsTestCaseMixin, InsertChartMixin, SupersetTestCase):
         rv = self.delete_assert_metric(uri, "bulk_delete")
         assert rv.status_code == 400
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
+    def test_mutation_audit_logs_record_chart_id(self):
+        """
+        Chart API: create/update/delete/bulk delete audit logs persist slice_id
+        """
+        admin = self.get_user("admin")
+        table_id = self.get_table(name="birth_names").id
+        self.login(ADMIN_USERNAME)
+
+        rv = self.post_assert_metric(
+            "api/v1/chart/",
+            {
+                "slice_name": "audit_log_chart",
+                "datasource_id": table_id,
+                "datasource_type": "table",
+            },
+            "post",
+        )
+        assert rv.status_code == 201
+        chart_id = json.loads(rv.data.decode("utf-8"))["id"]
+        log = self.get_latest_log("ChartRestApi.post")
+        assert log.user_id == admin.id
+        assert log.slice_id == chart_id
+
+        rv = self.put_assert_metric(
+            f"api/v1/chart/{chart_id}", {"slice_name": "audit_log_chart_2"}, "put"
+        )
+        assert rv.status_code == 200
+        log = self.get_latest_log("ChartRestApi.put")
+        assert log.slice_id == chart_id
+
+        rv = self.delete_assert_metric(f"api/v1/chart/{chart_id}", "delete")
+        assert rv.status_code == 200
+        log = self.get_latest_log("ChartRestApi.delete")
+        assert log.slice_id == chart_id
+
+        bulk_ids = [
+            self.insert_chart(f"audit_bulk_{i}", [admin.id], table_id, admin).id
+            for i in range(2)
+        ]
+        rv = self.delete_assert_metric(
+            f"api/v1/chart/?q={rison.dumps(bulk_ids)}", "bulk_delete"
+        )
+        assert rv.status_code == 200
+        log = self.get_latest_log("ChartRestApi.bulk_delete")
+        assert sorted(json.loads(log.json)["slice_ids"]) == sorted(bulk_ids)
+
+    def test_failed_mutation_audit_logs_omit_chart_id(self):
+        """
+        Chart API: not-found update/delete audit logs do not claim a slice_id
+        """
+        self.login(ADMIN_USERNAME)
+        missing_id = 1000
+
+        rv = self.put_assert_metric(
+            f"api/v1/chart/{missing_id}", {"slice_name": "missing"}, "put"
+        )
+        assert rv.status_code == 404
+        log = self.get_latest_log("ChartRestApi.put")
+        assert log.slice_id is None
+
+        rv = self.delete_assert_metric(f"api/v1/chart/{missing_id}", "delete")
+        assert rv.status_code == 404
+        log = self.get_latest_log("ChartRestApi.delete")
+        assert log.slice_id is None
+
+        rv = self.delete_assert_metric(
+            f"api/v1/chart/?q={rison.dumps([missing_id])}", "bulk_delete"
+        )
+        assert rv.status_code == 404
+        log = self.get_latest_log("ChartRestApi.bulk_delete")
+        assert "slice_ids" not in json.loads(log.json)
+
     def test_delete_not_found_chart(self):
         """
         Chart API: Test not found delete

@@ -321,6 +321,16 @@ class SupersetTestCase(TestCase):
         return user
 
     @staticmethod
+    def get_latest_log(action: str) -> models.Log:
+        """Return the most recent persisted audit log row for ``action``."""
+        return (
+            db.session.query(models.Log)
+            .filter_by(action=action)
+            .order_by(models.Log.id.desc())
+            .first()
+        )
+
+    @staticmethod
     def get_role(name: str) -> Optional[ab_models.User]:
         user = (
             db.session.query(security_manager.role_model)

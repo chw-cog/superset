@@ -16,6 +16,7 @@
 # under the License.
 # pylint: disable=too-many-lines
 import logging
+from collections.abc import Callable
 from contextvars import ContextVar
 from datetime import datetime
 from io import BytesIO
@@ -676,9 +677,12 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: f"{self.__class__.__name__}.post",
         log_to_statsd=False,
+        allow_extra_payload=True,
     )
     @requires_json
-    def post(self) -> Response:
+    def post(
+        self, add_extra_log_payload: Callable[..., None] = lambda **kwargs: None
+    ) -> Response:
         """Create a new chart.
         ---
         post:
@@ -720,6 +724,7 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
             return self.response_400(message=error.messages)
         try:
             new_model = CreateChartCommand(item).run()
+            add_extra_log_payload(slice_id=new_model.id)
             return self.response(201, id=new_model.id, result=item, uuid=new_model.uuid)
         except DashboardsForbiddenError as ex:
             return self.response(ex.status, message=ex.message)
@@ -741,9 +746,14 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: f"{self.__class__.__name__}.put",
         log_to_statsd=False,
+        allow_extra_payload=True,
     )
     @requires_json
-    def put(self, pk: int) -> Response:
+    def put(
+        self,
+        pk: int,
+        add_extra_log_payload: Callable[..., None] = lambda **kwargs: None,
+    ) -> Response:
         """Update a chart.
         ---
         put:
@@ -844,6 +854,7 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
             changed_model = UpdateChartCommand(
                 pk, item, normalization_changes=normalization_changes
             ).run()
+            add_extra_log_payload(slice_id=changed_model.id)
             new_info = current_entity_version_info(
                 Slice, changed_model.id, changed_model.uuid
             )
@@ -887,8 +898,13 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: f"{self.__class__.__name__}.delete",
         log_to_statsd=False,
+        allow_extra_payload=True,
     )
-    def delete(self, pk: int) -> Response:
+    def delete(
+        self,
+        pk: int,
+        add_extra_log_payload: Callable[..., None] = lambda **kwargs: None,
+    ) -> Response:
         """Delete a chart.
 
         When the ``SOFT_DELETE`` feature flag is enabled, marks the chart as
@@ -929,6 +945,7 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
         """
         try:
             DeleteChartCommand([pk]).run()
+            add_extra_log_payload(slice_id=pk)
             return self.response(200, message="OK")
         except ChartNotFoundError:
             return self.response_404()
@@ -951,8 +968,13 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: f"{self.__class__.__name__}.bulk_delete",
         log_to_statsd=False,
+        allow_extra_payload=True,
     )
-    def bulk_delete(self, **kwargs: Any) -> Response:
+    def bulk_delete(
+        self,
+        add_extra_log_payload: Callable[..., None] = lambda **kwargs: None,
+        **kwargs: Any,
+    ) -> Response:
         """Bulk delete charts.
 
         When the ``SOFT_DELETE`` feature flag is enabled, marks each chart as
@@ -996,6 +1018,7 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
         item_ids = kwargs["rison"]
         try:
             DeleteChartCommand(item_ids).run()
+            add_extra_log_payload(slice_ids=item_ids)
             return self.response(
                 200,
                 message=ngettext(
