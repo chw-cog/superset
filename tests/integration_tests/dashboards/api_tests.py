@@ -1674,6 +1674,75 @@ class TestDashboardApi(ApiEditorsTestCaseMixin, InsertChartMixin, SupersetTestCa
             model = db.session.query(Dashboard).get(dashboard_id)
             assert model is None
 
+    def test_mutation_audit_logs_record_dashboard_id(self):
+        """
+        Dashboard API: create/update/delete/bulk delete audit logs persist
+        dashboard_id
+        """
+        admin = self.get_user("admin")
+        self.login(ADMIN_USERNAME)
+
+        rv = self.post_assert_metric(
+            "api/v1/dashboard/", {"dashboard_title": "audit_log_dash"}, "post"
+        )
+        assert rv.status_code == 201
+        dashboard_id = json.loads(rv.data.decode("utf-8"))["id"]
+        log = self.get_latest_log("DashboardRestApi.post")
+        assert log.user_id == admin.id
+        assert log.dashboard_id == dashboard_id
+
+        rv = self.put_assert_metric(
+            f"api/v1/dashboard/{dashboard_id}",
+            {"dashboard_title": "audit_log_dash_2"},
+            "put",
+        )
+        assert rv.status_code == 200
+        log = self.get_latest_log("DashboardRestApi.put")
+        assert log.dashboard_id == dashboard_id
+
+        rv = self.delete_assert_metric(f"api/v1/dashboard/{dashboard_id}", "delete")
+        assert rv.status_code == 200
+        log = self.get_latest_log("DashboardRestApi.delete")
+        assert log.dashboard_id == dashboard_id
+
+        bulk_ids = [
+            self.insert_dashboard(f"audit_bulk_{i}", f"audit_bulk_{i}", [admin.id]).id
+            for i in range(2)
+        ]
+        rv = self.delete_assert_metric(
+            f"api/v1/dashboard/?q={rison.dumps(bulk_ids)}", "bulk_delete"
+        )
+        assert rv.status_code == 200
+        log = self.get_latest_log("DashboardRestApi.bulk_delete")
+        assert sorted(json.loads(log.json)["dashboard_ids"]) == sorted(bulk_ids)
+
+    def test_failed_mutation_audit_logs_omit_dashboard_id(self):
+        """
+        Dashboard API: not-found update/delete audit logs do not claim a
+        dashboard_id
+        """
+        self.login(ADMIN_USERNAME)
+        missing_id = 1000
+
+        rv = self.put_assert_metric(
+            f"api/v1/dashboard/{missing_id}", {"dashboard_title": "missing"}, "put"
+        )
+        assert rv.status_code == 404
+        log = self.get_latest_log("DashboardRestApi.put")
+        assert log.dashboard_id is None
+
+        rv = self.delete_assert_metric(f"api/v1/dashboard/{missing_id}", "delete")
+        assert rv.status_code == 404
+        log = self.get_latest_log("DashboardRestApi.delete")
+        assert log.dashboard_id is None
+
+        rv = self.delete_assert_metric(
+            f"api/v1/dashboard/?q={rison.dumps([missing_id])}", "bulk_delete"
+        )
+        assert rv.status_code == 404
+        log = self.get_latest_log("DashboardRestApi.bulk_delete")
+        assert "dashboard_ids" not in json.loads(log.json)
+
     def test_delete_bulk_embedded_dashboards(self):
         """
         Dashboard API: Test delete bulk embedded
