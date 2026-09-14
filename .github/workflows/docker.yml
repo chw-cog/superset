@@ -1,4 +1,4 @@
-name: Build & publish docker images
+name: Build docker images
 
 on:
   push:
@@ -162,20 +162,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUILD_PRESET: ${{ matrix.build_preset }}
         run: |
-          # Single platform builds in pull_request context to speed things up
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            PLATFORM_ARG="--platform linux/arm64 --platform linux/amd64"
-            # can only --load images in single-platform builds
-            PUSH_OR_LOAD="--push"
-          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            PLATFORM_ARG="--platform linux/amd64"
-            PUSH_OR_LOAD="--load"
-          fi
+          # Load a single-platform image locally for scans and smoke tests.
+          # Branch pushes and pull requests must not publish images.
 
           # Retry to absorb transient Docker Hub registry errors (base-image
-          # pull timeouts, 504/401 on push, ECONNRESET) that otherwise fail
-          # the whole job. buildx reuses the buildkit layer cache from the
-          # failed attempt, so a retry mostly re-does just the failed push.
+          # pull timeouts, ECONNRESET) that otherwise fail the whole job.
+          # buildx reuses the buildkit layer cache from the failed attempt.
           #
           # See scripts/docker-build-extra-flags.sh for why "py311"/"py312"
           # are excluded from the PY_VER override applied to every other
@@ -187,12 +179,12 @@ jobs:
 
           for attempt in 1 2 3; do
             if supersetbot docker \
-              $PUSH_OR_LOAD \
+              --load \
               --preset "$BUILD_PRESET" \
               --context "$EVENT" \
               --context-ref "$RELEASE" $FORCE_LATEST \
               --extra-flags "$EXTRA_FLAGS" \
-              $PLATFORM_ARG; then
+              --platform linux/amd64; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -201,15 +193,6 @@ jobs:
             fi
             echo "::warning::Build attempt ${attempt} failed; retrying in 30s..."
             sleep 30
-          done
-
-      # in the context of push (using multi-platform build), we need to pull the image locally
-      - name: Docker pull
-        if: github.event_name == 'push'
-        run: |
-          for i in 1 2 3; do
-            docker pull $IMAGE_TAG && break
-            [ $i -lt 3 ] && sleep 30
           done
 
       - name: Print docker stats
