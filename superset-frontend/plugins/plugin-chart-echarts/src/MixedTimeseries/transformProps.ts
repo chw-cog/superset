@@ -80,6 +80,7 @@ import {
   getMinAndMaxFromBounds,
   getOverMaxHiddenFormatter,
   getTemporalAxisTickConfig,
+  showsAllAxisLabels,
   resolveTemporalTickValues,
 } from '../utils/series';
 import { resolveLegendLayout } from '../utils/legendLayout';
@@ -718,10 +719,26 @@ export default function transformProps(
   // is never suppressed (#39899). The formatter itself dedupes consecutive
   // identical labels and thins out labels that would otherwise visually
   // collide, since hideOverlap can no longer do that for us.
+  const showAllLabels = showsAllAxisLabels(xAxisLabelInterval);
+  // Both queries share the axis, so a bucket contributed by either needs a tick.
+  const temporalTickValues = resolveTemporalTickValues(
+    [...rebasedDataA, ...rebasedDataB],
+    xAxisLabel,
+    xAxisType,
+    resolvedTimeGrain,
+    annotationLayers,
+    showAllLabels,
+  );
+  // Every bucket already carries its own label when the axis is pinned to
+  // all of them, so neither the forced boundary labels nor the formatter's
+  // spacing pass has anything left to add or thin.
+  const pinAllLabels = showAllLabels && !!temporalTickValues;
+
   const showMaxLabel =
     xAxisType === AxisType.Time &&
     xAxisLabelRotation === 0 &&
-    !!resolvedTimeGrain;
+    !!resolvedTimeGrain &&
+    !pinAllLabels;
   const deduplicatedFormatter = showMaxLabel
     ? createSpacedXAxisFormatter(
         xAxisFormatter,
@@ -801,15 +818,6 @@ export default function transformProps(
   const { setDataMask = () => {}, onContextMenu } = hooks;
   const alignTicks = yAxisIndex !== yAxisIndexB;
 
-  // Both queries share the axis, so a bucket contributed by either needs a tick.
-  const temporalTickValues = resolveTemporalTickValues(
-    [...rebasedDataA, ...rebasedDataB],
-    xAxisLabel,
-    xAxisType,
-    resolvedTimeGrain,
-    annotationLayers,
-  );
-
   const temporalAxisTickConfig = getTemporalAxisTickConfig(
     temporalTickValues,
     showMaxLabel,
@@ -819,6 +827,7 @@ export default function transformProps(
     deduplicatedFormatter,
     false,
     zoomable,
+    showAllLabels,
   );
 
   const echartOptions: EChartsCoreOption = {
