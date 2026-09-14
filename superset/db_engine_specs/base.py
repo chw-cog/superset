@@ -1082,6 +1082,22 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
         return None
 
     @classmethod
+    def get_connection_database_name(
+        cls,
+        database: Database,  # pylint: disable=unused-argument
+    ) -> str | None:
+        """
+        Return the name of the database the connection is bound to.
+
+        Only meaningful for engines that do not support catalogs (``supports_catalog``
+        is False) but still accept a leading ``database.schema.table`` qualifier that
+        refers to the connection's own database. Returning None means the name is
+        unknown or ambiguous, in which case such qualifiers are not normalized and
+        access checks fail closed.
+        """
+        return None
+
+    @classmethod
     def get_default_schema(cls, database: Database, catalog: str | None) -> str | None:
         """
         Return the default schema for a catalog in a given database.
