@@ -34,6 +34,39 @@ import {
 } from './types';
 import { DEFAULT_FETCH_RETRY_OPTIONS, DEFAULT_APP_ROOT } from './constants';
 
+const CSRF_HEADER = 'X-CSRFToken';
+// Mirrors `SupersetErrorType.FRONTEND_CSRF_ERROR`, emitted by the server when
+// a JSON request is rejected at CSRF validation (before the view runs).
+const CSRF_ERROR_TYPE = 'FRONTEND_CSRF_ERROR';
+
+async function isCsrfRejection(res: unknown): Promise<boolean> {
+  if (typeof res !== 'object' || res === null) {
+    return false;
+  }
+  const { status, clone } = res as Partial<Response>;
+  if (status !== 400 || typeof clone !== 'function') {
+    return false;
+  }
+  try {
+    const body: unknown = await clone.call(res).json();
+    if (typeof body !== 'object' || body === null || !('errors' in body)) {
+      return false;
+    }
+    const { errors } = body as { errors: unknown };
+    return (
+      Array.isArray(errors) &&
+      errors.some(
+        (error: unknown) =>
+          typeof error === 'object' &&
+          error !== null &&
+          (error as { error_type?: unknown }).error_type === CSRF_ERROR_TYPE,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 const defaultUnauthorizedHandlerForPrefix = (appRoot: string) => () => {
   if (!window.location.pathname.startsWith(`${appRoot}/login`)) {
     window.location.href = `${appRoot}/login?next=${window.location.href}`;
@@ -46,6 +79,8 @@ export default class SupersetClientClass {
   csrfToken?: CsrfToken;
 
   csrfPromise?: CsrfPromise;
+
+  csrfRefreshPromise?: CsrfPromise;
 
   guestToken?: string;
 
@@ -101,7 +136,7 @@ export default class SupersetClientClass {
       ...fetchRetryOptions,
     };
     if (typeof this.csrfToken === 'string') {
-      this.headers = { ...this.headers, 'X-CSRFToken': this.csrfToken };
+      this.headers = { ...this.headers, [CSRF_HEADER]: this.csrfToken };
       this.csrfPromise = Promise.resolve(this.csrfToken);
     }
     if (guestToken) {
@@ -211,19 +246,30 @@ export default class SupersetClientClass {
     return this.request({ ...requestConfig, method: 'POST' });
   }
 
-  async request<T extends ParseMethod = 'json'>({
-    credentials,
-    mode,
-    endpoint,
-    host,
-    url,
-    headers,
-    timeout,
-    fetchRetryOptions,
-    ignoreUnauthorized = false,
-    ...rest
-  }: RequestConfig & { parseMethod?: T }) {
+  async request<T extends ParseMethod = 'json'>(
+    requestConfig: RequestConfig & { parseMethod?: T },
+  ) {
     await this.ensureAuth();
+    return this.requestWithCsrfRecovery(requestConfig, true);
+  }
+
+  private async requestWithCsrfRecovery<T extends ParseMethod = 'json'>(
+    requestConfig: RequestConfig & { parseMethod?: T },
+    allowCsrfRetry: boolean,
+  ): ReturnType<typeof callApiAndParseWithTimeout<T>> {
+    const {
+      credentials,
+      mode,
+      endpoint,
+      host,
+      url,
+      headers,
+      timeout,
+      fetchRetryOptions,
+      ignoreUnauthorized = false,
+      ...rest
+    } = requestConfig;
+    const tokenUsed = this.csrfToken;
     return callApiAndParseWithTimeout({
       ...rest,
       credentials: credentials ?? this.credentials,
@@ -232,12 +278,51 @@ export default class SupersetClientClass {
       headers: { ...this.headers, ...headers },
       timeout: timeout ?? this.timeout,
       fetchRetryOptions: fetchRetryOptions ?? this.fetchRetryOptions,
-    }).catch(res => {
-      if (res?.status === 401 && !ignoreUnauthorized) {
+    }).catch(async (res: unknown) => {
+      if (
+        (res as Partial<Response> | null)?.status === 401 &&
+        !ignoreUnauthorized
+      ) {
         this.handleUnauthorized();
       }
-      return Promise.reject(res);
+      if (!allowCsrfRetry || !(await isCsrfRejection(res))) {
+        return Promise.reject(res);
+      }
+      try {
+        await this.refreshCsrfTokenAfterRejection(tokenUsed);
+      } catch {
+        return Promise.reject(res);
+      }
+      // Drop any explicitly supplied CSRF header so the replay uses the
+      // freshly fetched token from `this.headers` instead of the stale one.
+      const freshHeaders = { ...headers };
+      delete freshHeaders[CSRF_HEADER];
+      return this.requestWithCsrfRecovery(
+        { ...requestConfig, headers: freshHeaders },
+        false,
+      );
     });
+  }
+
+  /**
+   * Refresh the CSRF token after the server rejected a request that carried
+   * `staleToken`. Concurrent rejections share a single in-flight refresh, and
+   * a rejection that arrives after the token has already been replaced does
+   * not trigger another round trip.
+   */
+  private async refreshCsrfTokenAfterRejection(
+    staleToken: CsrfToken | undefined,
+  ): CsrfPromise {
+    if (this.csrfRefreshPromise) {
+      return this.csrfRefreshPromise;
+    }
+    if (this.isAuthenticated() && this.csrfToken !== staleToken) {
+      return this.csrfToken;
+    }
+    this.csrfRefreshPromise = this.fetchCSRFToken().finally(() => {
+      this.csrfRefreshPromise = undefined;
+    });
+    return this.csrfRefreshPromise;
   }
 
   async ensureAuth(): CsrfPromise {
@@ -270,7 +355,7 @@ export default class SupersetClientClass {
       if (typeof json === 'object') {
         this.csrfToken = json.result as string;
         if (typeof this.csrfToken === 'string') {
-          this.headers = { ...this.headers, 'X-CSRFToken': this.csrfToken };
+          this.headers = { ...this.headers, [CSRF_HEADER]: this.csrfToken };
         }
       }
       if (this.isAuthenticated()) {

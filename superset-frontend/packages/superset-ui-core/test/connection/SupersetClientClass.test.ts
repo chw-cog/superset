@@ -665,6 +665,207 @@ describe('SupersetClientClass', () => {
     });
   });
 
+  describe('CSRF recovery', () => {
+    const protocol = 'https:';
+    const host = 'host';
+    const appRoot = '/app';
+    const mockEndpoint = '/api/v1/dataset/1';
+    const mockUrl = `${protocol}//${host}${appRoot}${mockEndpoint}`;
+    const csrfRejection = {
+      status: 400,
+      body: {
+        errors: [
+          {
+            message: 'The CSRF token has expired.',
+            error_type: 'FRONTEND_CSRF_ERROR',
+            level: 'warning',
+            extra: null,
+          },
+        ],
+      },
+    };
+    const otherRejection = {
+      status: 400,
+      body: {
+        errors: [
+          {
+            message: 'Bad payload',
+            error_type: 'INVALID_PAYLOAD_SCHEMA_ERROR',
+            level: 'error',
+            extra: null,
+          },
+        ],
+      },
+    };
+
+    // fetch-mock normalizes recorded header names to lower case
+    const headerOf = (call: { options?: unknown }, name: string) =>
+      (call.options as CallApi | undefined)?.headers?.[name.toLowerCase()];
+
+    // preceding suites leave a reset (not restored) `ensureAuth` spy behind
+    beforeEach(() => jest.restoreAllMocks());
+
+    const createClient = async () => {
+      fetchMock.removeRoute(LOGIN_GLOB);
+      fetchMock.get(LOGIN_GLOB, { result: 'stale' }, { name: LOGIN_GLOB });
+      const client = new SupersetClientClass({ protocol, host, appRoot });
+      await client.init();
+      fetchMock.removeRoute(LOGIN_GLOB);
+      fetchMock.get(LOGIN_GLOB, { result: 'fresh' }, { name: LOGIN_GLOB });
+      fetchMock.clearHistory();
+      return client;
+    };
+
+    test('refreshes the token once and replays a CSRF-rejected request', async () => {
+      const client = await createClient();
+      fetchMock.putOnce(mockUrl, csrfRejection);
+      fetchMock.put(mockUrl, { result: 'saved' });
+
+      const { json } = await client.put({
+        endpoint: mockEndpoint,
+        jsonPayload: { description: 'updated' },
+        headers: { 'X-Extra': 'kept' },
+      });
+
+      expect(json).toEqual({ result: 'saved' });
+      expect(fetchMock.callHistory.calls(LOGIN_GLOB)).toHaveLength(1);
+      const calls = fetchMock.callHistory.calls(mockUrl);
+      expect(calls).toHaveLength(2);
+      expect(calls[0].url).toBe(mockUrl);
+      expect(calls[1].url).toBe(mockUrl);
+      expect(headerOf(calls[0], 'X-CSRFToken')).toBe('stale');
+      expect(headerOf(calls[1], 'X-CSRFToken')).toBe('fresh');
+      expect(headerOf(calls[1], 'X-Extra')).toBe('kept');
+      expect(calls[1].options?.method).toBe(calls[0].options?.method);
+      expect(calls[1].options?.credentials).toBe(calls[0].options?.credentials);
+      expect(calls[1].options?.body).toEqual(calls[0].options?.body);
+      expect(calls[1].options?.body).toBe(
+        JSON.stringify({ description: 'updated' }),
+      );
+    });
+
+    test('replaces an explicitly supplied stale CSRF header on replay', async () => {
+      const client = await createClient();
+      fetchMock.putOnce(mockUrl, csrfRejection);
+      fetchMock.put(mockUrl, { result: 'saved' });
+
+      await client.put({
+        endpoint: mockEndpoint,
+        headers: { 'X-CSRFToken': 'explicit-stale' },
+      });
+
+      const calls = fetchMock.callHistory.calls(mockUrl);
+      expect(headerOf(calls[0], 'X-CSRFToken')).toBe('explicit-stale');
+      expect(headerOf(calls[1], 'X-CSRFToken')).toBe('fresh');
+    });
+
+    test('concurrent CSRF rejections share a single token refresh', async () => {
+      const client = await createClient();
+      const otherUrl = `${protocol}//${host}${appRoot}/api/v1/chart/2`;
+      fetchMock.putOnce(mockUrl, csrfRejection);
+      fetchMock.put(mockUrl, { result: 'a' });
+      fetchMock.postOnce(otherUrl, csrfRejection);
+      fetchMock.post(otherUrl, { result: 'b' });
+
+      const [a, b] = await Promise.all([
+        client.put({ endpoint: mockEndpoint }),
+        client.post({ endpoint: '/api/v1/chart/2' }),
+      ]);
+
+      expect(a.json).toEqual({ result: 'a' });
+      expect(b.json).toEqual({ result: 'b' });
+      expect(fetchMock.callHistory.calls(LOGIN_GLOB)).toHaveLength(1);
+      expect(fetchMock.callHistory.calls(mockUrl)).toHaveLength(2);
+      expect(fetchMock.callHistory.calls(otherUrl)).toHaveLength(2);
+      expect(client.csrfRefreshPromise).toBeUndefined();
+    });
+
+    test('stops after a second CSRF rejection and surfaces the response', async () => {
+      const client = await createClient();
+      fetchMock.put(mockUrl, csrfRejection);
+
+      let error: Response | undefined;
+      try {
+        await client.put({ endpoint: mockEndpoint });
+      } catch (err) {
+        error = err;
+      }
+
+      expect(error?.status).toBe(400);
+      expect(await error?.json()).toEqual(csrfRejection.body);
+      expect(fetchMock.callHistory.calls(LOGIN_GLOB)).toHaveLength(1);
+      expect(fetchMock.callHistory.calls(mockUrl)).toHaveLength(2);
+    });
+
+    test('surfaces the original rejection when the token refresh fails', async () => {
+      const client = await createClient();
+      fetchMock.removeRoute(LOGIN_GLOB);
+      fetchMock.get(LOGIN_GLOB, { status: 401 }, { name: LOGIN_GLOB });
+      fetchMock.put(mockUrl, csrfRejection);
+
+      let error: Response | undefined;
+      try {
+        await client.put({ endpoint: mockEndpoint });
+      } catch (err) {
+        error = err;
+      }
+
+      expect(error?.status).toBe(400);
+      expect(await error?.json()).toEqual(csrfRejection.body);
+      expect(fetchMock.callHistory.calls(LOGIN_GLOB)).toHaveLength(1);
+      expect(fetchMock.callHistory.calls(mockUrl)).toHaveLength(1);
+      expect(client.csrfRefreshPromise).toBeUndefined();
+    });
+
+    test('does not retry unrelated 400 errors', async () => {
+      const client = await createClient();
+      fetchMock.put(mockUrl, otherRejection);
+
+      let error: Response | undefined;
+      try {
+        await client.put({ endpoint: mockEndpoint });
+      } catch (err) {
+        error = err;
+      }
+
+      expect(error?.status).toBe(400);
+      expect(await error?.json()).toEqual(otherRejection.body);
+      expect(fetchMock.callHistory.calls(LOGIN_GLOB)).toHaveLength(0);
+      expect(fetchMock.callHistory.calls(mockUrl)).toHaveLength(1);
+    });
+
+    test('does not retry network failures', async () => {
+      const client = await createClient();
+      const networkError = new TypeError('Failed to fetch');
+      fetchMock.put(mockUrl, { throws: networkError });
+
+      await expect(
+        client.put({
+          endpoint: mockEndpoint,
+          fetchRetryOptions: { retries: 0 },
+        }),
+      ).rejects.toBe(networkError);
+      expect(fetchMock.callHistory.calls(LOGIN_GLOB)).toHaveLength(0);
+      expect(fetchMock.callHistory.calls(mockUrl)).toHaveLength(1);
+    });
+
+    test('does not retry 401 responses', async () => {
+      const client = await createClient();
+      fetchMock.put(mockUrl, { status: 401, body: csrfRejection.body });
+
+      let error: Response | undefined;
+      try {
+        await client.put({ endpoint: mockEndpoint, ignoreUnauthorized: true });
+      } catch (err) {
+        error = err;
+      }
+
+      expect(error?.status).toBe(401);
+      expect(fetchMock.callHistory.calls(LOGIN_GLOB)).toHaveLength(0);
+      expect(fetchMock.callHistory.calls(mockUrl)).toHaveLength(1);
+    });
+  });
+
   describe('.postForm()', () => {
     const protocol = 'https:';
     const host = 'host';

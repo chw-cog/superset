@@ -24,6 +24,7 @@ import pytest
 import sshtunnel
 from flask import Flask, Response
 from flask_babel import Babel
+from flask_wtf.csrf import CSRFError
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from werkzeug.exceptions import GatewayTimeout
 
@@ -384,3 +385,42 @@ class TestErrorHandlerNeverTurnsErrorsInto500s:
 
         assert response.status_code == 504
         assert json.loads(response.data)["error"] == "upstream took too long"
+
+
+class TestCsrfErrorHandler:
+    def _build_app_with_handlers(self) -> Flask:
+        test_app = Flask(__name__)
+        test_app.config["DEBUG"] = False
+        Babel(test_app)
+        set_app_error_handlers(test_app)
+
+        @test_app.route("/csrf-error", methods=["POST"])
+        def csrf_error_view() -> FlaskResponse:
+            raise CSRFError("The CSRF token has expired.")
+
+        return test_app
+
+    def test_json_request_returns_stable_csrf_error_type(self) -> None:
+        client = self._build_app_with_handlers().test_client()
+
+        response = client.post("/csrf-error", json={"a": 1})
+
+        assert response.status_code == 400
+        payload = json.loads(response.data)
+        assert payload["errors"][0]["error_type"] == (
+            SupersetErrorType.FRONTEND_CSRF_ERROR.value
+        )
+        assert payload["errors"][0]["message"] == "The CSRF token has expired."
+
+    def test_non_json_request_still_redirects_to_login(self) -> None:
+        client = self._build_app_with_handlers().test_client()
+
+        with patch(
+            "superset.views.error_handling.redirect_to_login",
+            return_value=Response(status=302, headers={"Location": "/login/"}),
+        ) as mock_redirect:
+            response = client.post("/csrf-error", data={"a": "1"})
+
+        mock_redirect.assert_called_once_with()
+        assert response.status_code == 302
+        assert response.headers["Location"] == "/login/"
