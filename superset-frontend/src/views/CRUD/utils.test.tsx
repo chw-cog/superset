@@ -23,6 +23,8 @@ import Chart from 'src/types/Chart';
 import {
   checkUploadExtensions,
   handleChartDelete,
+  handleDashboardDelete,
+  isDeletedHomeEntity,
   getAlreadyExists,
   getEncryptedExtraFieldsNeeded,
   getFilterValues,
@@ -41,7 +43,7 @@ import {
 } from 'src/views/CRUD/utils';
 import { User } from 'src/types/bootstrapTypes';
 import { WelcomeTable } from 'src/features/home/types';
-import { Filter, TableTab } from './types';
+import { Dashboard, Filter, TableTab } from './types';
 
 const terminalErrors = {
   errors: [
@@ -770,4 +772,149 @@ test('handleChartDelete surfaces the blocking alert/report names from a 422', as
   } finally {
     deleteSpy.mockRestore();
   }
+});
+
+test('handleChartDelete calls onDeleted only after a successful delete', async () => {
+  const deleteSpy = jest
+    .spyOn(SupersetClient, 'delete')
+    .mockResolvedValue({} as never);
+  const onDeleted = jest.fn();
+  const addSuccessToast = jest.fn();
+  const refreshData = jest.fn();
+  try {
+    handleChartDelete(
+      { id: 1, slice_name: 'chart' } as Chart,
+      addSuccessToast,
+      jest.fn(),
+      refreshData,
+      undefined,
+      undefined,
+      undefined,
+      onDeleted,
+    );
+    await waitFor(() => expect(addSuccessToast).toHaveBeenCalledTimes(1));
+    expect(refreshData).toHaveBeenCalledTimes(1);
+    expect(onDeleted).toHaveBeenCalledTimes(1);
+  } finally {
+    deleteSpy.mockRestore();
+  }
+});
+
+test('handleChartDelete does not call onDeleted when the delete fails', async () => {
+  const deleteSpy = jest
+    .spyOn(SupersetClient, 'delete')
+    .mockRejectedValue(new Response('{}', { status: 500 }));
+  const onDeleted = jest.fn();
+  const addDangerToast = jest.fn();
+  try {
+    handleChartDelete(
+      { id: 1, slice_name: 'chart' } as Chart,
+      jest.fn(),
+      addDangerToast,
+      jest.fn(),
+      undefined,
+      undefined,
+      undefined,
+      onDeleted,
+    );
+    await waitFor(() => expect(addDangerToast).toHaveBeenCalledTimes(1));
+    expect(onDeleted).not.toHaveBeenCalled();
+  } finally {
+    deleteSpy.mockRestore();
+  }
+});
+
+test('handleDashboardDelete calls onDeleted only after a successful delete', async () => {
+  const deleteSpy = jest
+    .spyOn(SupersetClient, 'delete')
+    .mockResolvedValue({} as never);
+  const onDeleted = jest.fn();
+  const addSuccessToast = jest.fn();
+  try {
+    handleDashboardDelete(
+      { id: 1, dashboard_title: 'dash' } as Dashboard,
+      jest.fn(),
+      addSuccessToast,
+      jest.fn(),
+      undefined,
+      undefined,
+      undefined,
+      onDeleted,
+    );
+    await waitFor(() => expect(addSuccessToast).toHaveBeenCalledTimes(1));
+    expect(onDeleted).toHaveBeenCalledTimes(1);
+  } finally {
+    deleteSpy.mockRestore();
+  }
+});
+
+test('handleDashboardDelete does not call onDeleted when the delete fails', async () => {
+  const deleteSpy = jest
+    .spyOn(SupersetClient, 'delete')
+    .mockRejectedValue(new Response('{}', { status: 500 }));
+  const onDeleted = jest.fn();
+  const addDangerToast = jest.fn();
+  try {
+    handleDashboardDelete(
+      { id: 1, dashboard_title: 'dash' } as Dashboard,
+      jest.fn(),
+      jest.fn(),
+      addDangerToast,
+      undefined,
+      undefined,
+      undefined,
+      onDeleted,
+    );
+    await waitFor(() => expect(addDangerToast).toHaveBeenCalledTimes(1));
+    expect(onDeleted).not.toHaveBeenCalled();
+  } finally {
+    deleteSpy.mockRestore();
+  }
+});
+
+test('isDeletedHomeEntity keeps chart and dashboard ids as distinct entity types', () => {
+  const chart = { id: 7, viz_type: 'table', slice_name: 'c' };
+  const dashboard = {
+    id: 7,
+    dashboard_title: 'd',
+    url: '/superset/dashboard/7/',
+  };
+  const viewedChart = { item_type: 'slice', item_url: '/explore/?slice_id=7' };
+  const viewedDashboard = {
+    item_type: 'dashboard',
+    item_url: '/superset/dashboard/7/',
+  };
+  const viewedSlugDashboard = {
+    item_type: 'dashboard',
+    item_url: '/superset/dashboard/my-slug/',
+  };
+
+  const deletedChart = { type: 'chart', id: 7 } as const;
+  expect(isDeletedHomeEntity(chart, deletedChart)).toBe(true);
+  expect(isDeletedHomeEntity(viewedChart, deletedChart)).toBe(true);
+  expect(isDeletedHomeEntity(dashboard, deletedChart)).toBe(false);
+  expect(isDeletedHomeEntity(viewedDashboard, deletedChart)).toBe(false);
+  expect(
+    isDeletedHomeEntity(
+      { item_type: 'slice', item_url: '/explore/?slice_id=77' },
+      deletedChart,
+    ),
+  ).toBe(false);
+
+  const deletedDashboard = {
+    type: 'dashboard',
+    id: 7,
+    url: '/superset/dashboard/my-slug/',
+  } as const;
+  expect(isDeletedHomeEntity(dashboard, deletedDashboard)).toBe(true);
+  expect(isDeletedHomeEntity(viewedDashboard, deletedDashboard)).toBe(true);
+  expect(isDeletedHomeEntity(viewedSlugDashboard, deletedDashboard)).toBe(true);
+  expect(isDeletedHomeEntity(chart, deletedDashboard)).toBe(false);
+  expect(isDeletedHomeEntity(viewedChart, deletedDashboard)).toBe(false);
+  expect(
+    isDeletedHomeEntity(
+      { item_type: 'dashboard', item_url: '/superset/dashboard/77/' },
+      deletedDashboard,
+    ),
+  ).toBe(false);
 });

@@ -59,6 +59,7 @@ interface ChartTableProps {
   otherTabData?: Array<object>;
   otherTabFilters: Filter[];
   otherTabTitle: string;
+  onChartDeleted?: (chart: Chart) => void;
 }
 
 function ChartTable({
@@ -70,6 +71,7 @@ function ChartTable({
   otherTabData,
   otherTabFilters,
   otherTabTitle,
+  onChartDeleted,
 }: ChartTableProps) {
   const history = useHistory();
   const initialTab = getItem(
@@ -239,6 +241,7 @@ function ChartTable({
               favoriteStatus={favoriteStatus[e.id]}
               saveFavoriteStatus={saveFavoriteStatus}
               handleBulkChartExport={handleBulkChartExport}
+              onDeleted={onChartDeleted}
             />
           ))}
         </CardContainer>

@@ -522,3 +522,109 @@ test('passes correct parameters to handleDashboardDelete for Other tab', async (
     sortBy: [{ desc: true, id: 'changed_on_delta_humanized' }],
   });
 });
+
+test('forwards onDashboardDeleted for the confirmed dashboard to handleDashboardDelete', async () => {
+  const mockHandleDashboardDelete =
+    require('src/views/CRUD/utils').handleDashboardDelete;
+  mockHandleDashboardDelete.mockClear();
+  const onDashboardDeleted = jest.fn();
+
+  jest.spyOn(hooks, 'useListViewResource').mockImplementation(() => ({
+    state: {
+      loading: false,
+      resourceCollection: mockDashboards,
+      resourceCount: mockDashboards.length,
+      bulkSelectEnabled: false,
+      lastFetched: new Date().toISOString(),
+    },
+    setResourceCollection: jest.fn(),
+    hasPerm: jest.fn().mockReturnValue(true),
+    refreshData: jest.fn(),
+    fetchData: jest.fn(),
+    toggleBulkSelect: jest.fn(),
+  }));
+
+  render(
+    <Router history={history}>
+      <DashboardTable
+        {...defaultProps}
+        otherTabData={mockDashboards}
+        otherTabTitle="All"
+        onDashboardDeleted={onDashboardDeleted}
+      />
+    </Router>,
+    { store },
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText('Test Dashboard 1')).toBeInTheDocument();
+  });
+
+  await userEvent.click(screen.getAllByLabelText(/more|options/i)[0]);
+  await userEvent.click(await screen.findByText('Delete'));
+  await userEvent.type(screen.getByTestId('delete-modal-input'), 'DELETE');
+  await userEvent.click(screen.getByTestId('modal-confirm-button'));
+
+  await waitFor(() => {
+    expect(mockHandleDashboardDelete).toHaveBeenCalledTimes(1);
+  });
+
+  // The callback is only invoked by handleDashboardDelete after the API
+  // delete succeeds, so confirming the modal alone must not notify Home.
+  expect(onDashboardDeleted).not.toHaveBeenCalled();
+
+  const onDeletedParam = mockHandleDashboardDelete.mock.calls[0][7];
+  onDeletedParam();
+  expect(onDashboardDeleted).toHaveBeenCalledTimes(1);
+  expect(onDashboardDeleted).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 1, dashboard_title: 'Test Dashboard 1' }),
+  );
+});
+
+test('cancelling the delete confirmation does not delete or notify Home', async () => {
+  const mockHandleDashboardDelete =
+    require('src/views/CRUD/utils').handleDashboardDelete;
+  mockHandleDashboardDelete.mockClear();
+  const onDashboardDeleted = jest.fn();
+
+  jest.spyOn(hooks, 'useListViewResource').mockImplementation(() => ({
+    state: {
+      loading: false,
+      resourceCollection: mockDashboards,
+      resourceCount: mockDashboards.length,
+      bulkSelectEnabled: false,
+      lastFetched: new Date().toISOString(),
+    },
+    setResourceCollection: jest.fn(),
+    hasPerm: jest.fn().mockReturnValue(true),
+    refreshData: jest.fn(),
+    fetchData: jest.fn(),
+    toggleBulkSelect: jest.fn(),
+  }));
+
+  render(
+    <Router history={history}>
+      <DashboardTable
+        {...defaultProps}
+        otherTabData={mockDashboards}
+        otherTabTitle="All"
+        onDashboardDeleted={onDashboardDeleted}
+      />
+    </Router>,
+    { store },
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText('Test Dashboard 1')).toBeInTheDocument();
+  });
+
+  await userEvent.click(screen.getAllByLabelText(/more|options/i)[0]);
+  await userEvent.click(await screen.findByText('Delete'));
+  await userEvent.click(await screen.findByTestId('modal-cancel-button'));
+
+  await waitFor(() => {
+    expect(screen.queryByTestId('delete-modal-input')).not.toBeInTheDocument();
+  });
+  expect(mockHandleDashboardDelete).not.toHaveBeenCalled();
+  expect(onDashboardDeleted).not.toHaveBeenCalled();
+});
