@@ -352,6 +352,7 @@ export function handleChartDelete(
   chartFilter?: string,
   userId?: string | number,
   getData?: (tab: TableTab) => void,
+  onDeleted?: () => void,
 ) {
   const filters = {
     pageIndex: 0,
@@ -377,6 +378,7 @@ export function handleChartDelete(
       if (chartFilter === 'Mine') refreshData(filters);
       else if (chartFilter && getData) getData(chartFilter as TableTab);
       else refreshData();
+      onDeleted?.();
       addSuccessToast(deletedToast(sliceName));
     },
     createErrorHandler(errMsg =>
@@ -393,6 +395,7 @@ export function handleDashboardDelete(
   dashboardFilter?: string,
   userId?: string | number,
   getData?: (tab: TableTab) => void,
+  onDeleted?: () => void,
 ) {
   return SupersetClient.delete({
     endpoint: `/api/v1/dashboard/${id}`,
@@ -419,12 +422,47 @@ export function handleDashboardDelete(
       else if (dashboardFilter === 'Other' && getData)
         getData(dashboardFilter as TableTab);
       else refreshData();
+      onDeleted?.();
       addSuccessToast(deletedToast(dashboardTitle));
     },
     createErrorHandler(errMsg =>
       addDangerToast(deleteFailedToast(dashboardTitle, errMsg)),
     ),
   );
+}
+
+export type DeletedHomeEntity =
+  | { type: 'chart'; id: number }
+  | { type: 'dashboard'; id: number; url?: string };
+
+const getDashboardUrlSegment = (url?: string | null) =>
+  url?.split(/[?#]/)[0].match(/\/dashboard\/([^/]+)\/?$/)?.[1];
+
+/**
+ * Whether a Home page entity refers to the deleted chart or dashboard.
+ * Handles both API list objects (`id`, charts carry `viz_type`) and
+ * `recent_activity` log entries, which only expose an `item_url`.
+ */
+export function isDeletedHomeEntity(
+  entity: object,
+  deleted: DeletedHomeEntity,
+): boolean {
+  const record = entity as Record<string, unknown>;
+  if ('item_url' in record) {
+    const itemUrl = typeof record.item_url === 'string' ? record.item_url : '';
+    if (deleted.type === 'chart') {
+      return new RegExp(`[?&]slice_id=${deleted.id}(?:&|$)`).test(itemUrl);
+    }
+    const segment = getDashboardUrlSegment(itemUrl);
+    return (
+      segment !== undefined &&
+      (segment === String(deleted.id) ||
+        segment === getDashboardUrlSegment(deleted.url))
+    );
+  }
+  if (String(record.id) !== String(deleted.id)) return false;
+  const isChart = 'viz_type' in record;
+  return deleted.type === 'chart' ? isChart : !isChart;
 }
 
 export function shortenSQL(sql: string, maxLines: number) {

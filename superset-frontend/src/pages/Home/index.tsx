@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { t } from '@apache-superset/core/translation';
 import {
   isFeatureEnabled,
@@ -41,14 +41,17 @@ import withToasts from 'src/components/MessageToasts/withToasts';
 import {
   CardContainer,
   createErrorHandler,
+  DeletedHomeEntity,
   getRecentActivityObjs,
   getUserEditableObjects,
+  isDeletedHomeEntity,
   loadingCardCount,
   mq,
 } from 'src/views/CRUD/utils';
+import { Dashboard, TableTab } from 'src/views/CRUD/types';
+import Chart from 'src/types/Chart';
 import { Switch } from '@superset-ui/core/components/Switch';
 import getBootstrapData from 'src/utils/getBootstrapData';
-import { TableTab } from 'src/views/CRUD/types';
 import SubMenu, { SubMenuProps } from 'src/features/home/SubMenu';
 import { userHasPermission } from 'src/dashboard/util/permissionUtils';
 import { WelcomePageLastTab } from 'src/features/home/types';
@@ -299,6 +302,41 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
     dangerouslySetItemDoNotUse(id, { thumbnails: !checked });
   };
 
+  const handleEntityDeleted = useCallback((deleted: DeletedHomeEntity) => {
+    const keep = (entity: object) => !isDeletedHomeEntity(entity, deleted);
+    if (deleted.type === 'chart') {
+      setChartData(data => data && data.filter(keep));
+    } else {
+      setDashboardData(data => data && data.filter(keep));
+    }
+    setActivityData(data => {
+      if (!data) return data;
+      const next: ActivityData = { ...data };
+      if (next[TableTab.Viewed]) {
+        next[TableTab.Viewed] = next[TableTab.Viewed].filter(keep);
+      }
+      if (next[TableTab.Other]) {
+        next[TableTab.Other] = next[TableTab.Other].filter(keep);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleChartDeleted = useCallback(
+    (chart: Chart) => handleEntityDeleted({ type: 'chart', id: chart.id }),
+    [handleEntityDeleted],
+  );
+
+  const handleDashboardDeleted = useCallback(
+    (dashboard: Dashboard) =>
+      handleEntityDeleted({
+        type: 'dashboard',
+        id: dashboard.id,
+        url: dashboard.url,
+      }),
+    [handleEntityDeleted],
+  );
+
   useEffect(() => {
     if (!collapseState && queryData?.length) {
       setActiveState(activeState => [...activeState, '4']);
@@ -396,6 +434,7 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
                         otherTabData={activityData?.[TableTab.Other]}
                         otherTabFilters={otherTabFilters}
                         otherTabTitle={otherTabTitle}
+                        onDashboardDeleted={handleDashboardDeleted}
                       />
                     ),
                 },
@@ -416,6 +455,7 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
                               otherTabData={activityData?.[TableTab.Other]}
                               otherTabFilters={otherTabFilters}
                               otherTabTitle={otherTabTitle}
+                              onChartDeleted={handleChartDeleted}
                             />
                           ),
                       },

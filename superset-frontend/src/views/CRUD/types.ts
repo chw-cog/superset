@@ -50,6 +50,7 @@ export interface DashboardTableProps {
   otherTabData?: Array<Dashboard>;
   otherTabFilters: Filter[];
   otherTabTitle: string;
+  onDashboardDeleted?: (dashboard: Dashboard) => void;
 }
 
 export interface Dashboard {

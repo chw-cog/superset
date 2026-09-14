@@ -26,6 +26,7 @@ import {
   screen,
   userEvent,
   waitFor,
+  within,
 } from 'spec/helpers/testing-library';
 import { isFeatureEnabled, getExtensionsRegistry } from '@superset-ui/core';
 import Welcome from 'src/pages/Home';
@@ -42,17 +43,21 @@ const savedQueryEndpoint = 'glob:*/api/v1/saved_query/?*';
 const savedQueryInfoEndpoint = 'glob:*/api/v1/saved_query/_info?*';
 const recentActivityEndpoint = 'glob:*/api/v1/log/recent_activity/*';
 
-fetchMock.get(chartsEndpoint, {
-  result: [
-    {
-      slice_name: 'ChartyChart',
-      changed_on_utc: '24 Feb 2014 10:13:14',
-      url: '/fakeUrl/explore',
-      id: '4',
-      table: {},
-    },
-  ],
-});
+const mockChartsResult = [
+  {
+    slice_name: 'ChartyChart',
+    changed_on_utc: '24 Feb 2014 10:13:14',
+    url: '/fakeUrl/explore',
+    id: '4',
+    table: {},
+  },
+];
+
+fetchMock.get(
+  chartsEndpoint,
+  { result: mockChartsResult },
+  { name: chartsEndpoint },
+);
 
 fetchMock.get(dashboardsEndpoint, {
   result: [
@@ -96,13 +101,17 @@ const mockRecentActivityResult = [
   },
 ];
 
-fetchMock.get(recentActivityEndpoint, {
-  result: mockRecentActivityResult,
-});
+fetchMock.get(
+  recentActivityEndpoint,
+  { result: mockRecentActivityResult },
+  { name: recentActivityEndpoint },
+);
 
-fetchMock.get(chartInfoEndpoint, {
-  permissions: [],
-});
+fetchMock.get(
+  chartInfoEndpoint,
+  { permissions: [] },
+  { name: chartInfoEndpoint },
+);
 
 fetchMock.get(chartFavoriteStatusEndpoint, {
   result: [],
@@ -225,6 +234,118 @@ test('Without sql role - calls api methods in parallel on page load', async () =
   expect(fetchMock.callHistory.calls(recentActivityEndpoint)).toHaveLength(1);
   expect(fetchMock.callHistory.calls(savedQueryEndpoint)).toHaveLength(0);
   expect(fetchMock.callHistory.calls(dashboardsEndpoint)).toHaveLength(2);
+});
+
+test('removes a deleted chart from Recents without a reload, keeping a dashboard with the same id', async () => {
+  const deletableChart = {
+    slice_name: 'DeletableChart',
+    changed_on_utc: '24 Feb 2014 10:13:14',
+    url: '/explore/?slice_id=19',
+    id: 19,
+    viz_type: 'table',
+    table: {},
+  };
+  fetchMock.removeRoute(chartsEndpoint);
+  fetchMock.get(
+    chartsEndpoint,
+    { result: [deletableChart] },
+    {
+      name: chartsEndpoint,
+    },
+  );
+  fetchMock.removeRoute(chartInfoEndpoint);
+  fetchMock.get(
+    chartInfoEndpoint,
+    { permissions: ['can_write'] },
+    { name: chartInfoEndpoint },
+  );
+  fetchMock.removeRoute(recentActivityEndpoint);
+  fetchMock.get(
+    recentActivityEndpoint,
+    {
+      result: [
+        {
+          action: 'explore',
+          item_title: 'Viewed deletable chart',
+          item_type: 'slice',
+          item_url: '/explore/?slice_id=19',
+          time: 1741644999130.566,
+          time_delta_humanized: 'an hour ago',
+        },
+        ...mockRecentActivityResult,
+      ],
+    },
+    { name: recentActivityEndpoint },
+  );
+  fetchMock.delete(
+    'glob:*/api/v1/chart/19',
+    { message: 'Chart deleted' },
+    { name: 'deleteChart19' },
+  );
+
+  const adminUser = {
+    ...mockedProps.user,
+    roles: { ...mockedProps.user.roles, Admin: [] as string[][] },
+  };
+
+  try {
+    await renderWelcome({ ...mockedProps, user: adminUser });
+    userEvent.click(screen.getByRole('button', { name: 'Recents' }));
+    expect(
+      await screen.findByText('Viewed deletable chart'),
+    ).toBeInTheDocument();
+    const [chartTitle] = await screen.findAllByText('DeletableChart');
+    const chartCard = chartTitle.closest('.ant-card') as HTMLElement;
+
+    await userEvent.click(
+      within(chartCard).getByRole('img', { name: /more/i }),
+    );
+    await userEvent.click(await screen.findByText('Delete'));
+    await userEvent.type(
+      await screen.findByTestId('delete-modal-input'),
+      'DELETE',
+    );
+    await userEvent.click(screen.getByTestId('modal-confirm-button'));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.callHistory.calls(/api\/v1\/chart\/19/, { method: 'DELETE' }),
+      ).toHaveLength(1),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Viewed deletable chart'),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(mockRecentActivityResult[0].item_title),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(mockRecentActivityResult[1].item_title),
+    ).toHaveLength(1);
+  } finally {
+    fetchMock.removeRoute('deleteChart19');
+    fetchMock.removeRoute(chartsEndpoint);
+    fetchMock.get(
+      chartsEndpoint,
+      { result: mockChartsResult },
+      { name: chartsEndpoint },
+    );
+    fetchMock.removeRoute(chartInfoEndpoint);
+    fetchMock.get(
+      chartInfoEndpoint,
+      { permissions: [] },
+      {
+        name: chartInfoEndpoint,
+      },
+    );
+    fetchMock.removeRoute(recentActivityEndpoint);
+    fetchMock.get(
+      recentActivityEndpoint,
+      { result: mockRecentActivityResult },
+      { name: recentActivityEndpoint },
+    );
+  }
 });
 
 // Mock specific to the tests related to the toggle switch

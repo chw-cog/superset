@@ -75,6 +75,7 @@ interface ChartCardProps {
   showThumbnails?: boolean;
   handleBulkChartExport: (chartsToExport: Chart[]) => void;
   getData?: (tab: TableTab) => void;
+  onDeleted?: (chart: Chart) => void;
 }
 
 export default function ChartCard({
@@ -93,6 +94,7 @@ export default function ChartCard({
   user,
   handleBulkChartExport,
   getData,
+  onDeleted,
 }: ChartCardProps) {
   const userId = user?.userId;
 
@@ -196,6 +198,7 @@ export default function ChartCard({
               chartFilter,
               userId,
               getData,
+              onDeleted ? () => onDeleted(chart) : undefined,
             )
           }
         >

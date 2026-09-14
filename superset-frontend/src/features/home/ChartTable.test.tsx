@@ -24,6 +24,7 @@ import {
   waitFor,
 } from 'spec/helpers/testing-library';
 import { VizType } from '@superset-ui/core';
+import { logging } from '@apache-superset/core/utils';
 import fetchMock from 'fetch-mock';
 import { act } from 'react';
 import handleResourceExport from 'src/utils/export';
@@ -247,4 +248,71 @@ test('refreshes other tab data after deleting a chart', async () => {
 
   expect(screen.getByText('cool chart 1')).toBeInTheDocument();
   expect(screen.getByText('cool chart 2')).toBeInTheDocument();
+});
+
+test('notifies onChartDeleted with the deleted chart after a successful delete', async () => {
+  fetchMock.removeRoute(chartsEndpoint);
+  fetchMock.get(
+    chartsEndpoint,
+    { result: mockCharts.slice(1), count: mockCharts.length - 1 },
+    { name: chartsEndpoint },
+  );
+  fetchMock.delete('glob:*/api/v1/chart/0', { message: 'Chart deleted' });
+  const onChartDeleted = jest.fn();
+
+  await renderChartTable({
+    ...otherTabProps,
+    otherTabTitle: 'All',
+    onChartDeleted,
+  });
+
+  await userEvent.click(screen.getAllByRole('img', { name: /more/i })[0]);
+  await userEvent.click(await screen.findByText('Delete'));
+  await userEvent.type(screen.getByTestId('delete-modal-input'), 'DELETE');
+  await userEvent.click(screen.getByTestId('modal-confirm-button'));
+
+  await waitFor(() => expect(onChartDeleted).toHaveBeenCalledTimes(1));
+  expect(onChartDeleted).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 0, slice_name: 'cool chart 0' }),
+  );
+});
+
+test('does not notify onChartDeleted when the delete request fails', async () => {
+  fetchMock.removeRoute(chartsEndpoint);
+  fetchMock.get(
+    chartsEndpoint,
+    { result: mockCharts },
+    { name: chartsEndpoint },
+  );
+  fetchMock.delete('glob:*/api/v1/chart/1', {
+    status: 403,
+    body: { message: 'Forbidden' },
+  });
+  const onChartDeleted = jest.fn();
+  const loggingSpy = jest.spyOn(logging, 'error').mockImplementation();
+
+  await renderChartTable({
+    ...otherTabProps,
+    otherTabTitle: 'All',
+    onChartDeleted,
+  });
+
+  await userEvent.click(screen.getAllByRole('img', { name: /more/i })[1]);
+  await userEvent.click(await screen.findByText('Delete'));
+  await userEvent.type(screen.getByTestId('delete-modal-input'), 'DELETE');
+  await userEvent.click(screen.getByTestId('modal-confirm-button'));
+
+  await waitFor(() =>
+    expect(
+      fetchMock.callHistory.calls(/api\/v1\/chart\/1/, { method: 'DELETE' }),
+    ).toHaveLength(1),
+  );
+  await waitFor(() =>
+    expect(loggingSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 403 }),
+    ),
+  );
+  expect(onChartDeleted).not.toHaveBeenCalled();
+  expect(screen.getByText('cool chart 1')).toBeInTheDocument();
+  loggingSpy.mockRestore();
 });
