@@ -441,3 +441,87 @@ def test_identifier_quote_uses_square_brackets() -> None:
         "end": "]",
         "escape_by_doubling": True,
     }
+
+
+@pytest.mark.parametrize(
+    "connection_string,expected",
+    [
+        (
+            "Driver={ODBC Driver 17 for SQL Server};Server=tcp:host,1433;"
+            "Database=analytics;Uid=user;Pwd=p;ss",
+            {
+                "driver": "ODBC Driver 17 for SQL Server",
+                "server": "tcp:host,1433",
+                "database": "analytics",
+                "uid": "user",
+                "pwd": "p",
+            },
+        ),
+        (
+            "DATABASE = {my db;with}}braces} ; DSN=foo",
+            {"database": "my db;with}braces", "dsn": "foo"},
+        ),
+        (
+            "Initial Catalog=analytics;Database=other",
+            {"initial catalog": "analytics", "database": "other"},
+        ),
+    ],
+)
+def test_parse_odbc_connection_string(
+    connection_string: str, expected: dict[str, str]
+) -> None:
+    from superset.db_engine_specs.mssql import parse_odbc_connection_string
+
+    assert parse_odbc_connection_string(connection_string) == expected
+
+
+@pytest.mark.parametrize(
+    "uri,connect_args,expected",
+    [
+        ("mssql+pymssql://u:p@host:1433/analytics", {}, "analytics"),
+        ("mssql+pymssql://u:p@host:1433/analytics", {"database": "other"}, "other"),
+        ("mssql+pymssql://u:p@host:1433", {}, None),
+        ("mssql+pyodbc://u:p@mydsn", {}, None),
+        ("mssql+pyodbc://u:p@mydsn/analytics", {}, "analytics"),
+        (
+            "mssql+pyodbc:///?odbc_connect=Driver%3D%7BODBC+Driver+17%7D%3BServer%3Dhost"
+            "%3BDatabase%3Danalytics%3BUid%3Du",
+            {},
+            "analytics",
+        ),
+        (
+            "mssql+pyodbc:///?odbc_connect=Driver%3D%7BODBC+Driver+17%7D%3BServer%3Dhost"
+            "%3BDatabase%3D%7Bmy+db%7D%3BUid%3Du",
+            {},
+            "my db",
+        ),
+        (
+            "mssql+pyodbc:///?odbc_connect=Driver%3D%7BODBC+Driver+17%7D%3BServer%3Dhost"
+            "%3BInitial+Catalog%3Danalytics",
+            {},
+            "analytics",
+        ),
+        ("mssql+pyodbc:///?odbc_connect=DSN%3Dmydsn%3BUid%3Du", {}, None),
+        (
+            "mssql+pyodbc:///?odbc_connect=DSN%3Dmydsn%3BDatabase%3Danalytics",
+            {},
+            "analytics",
+        ),
+        (
+            "mssql+pyodbc:///?odbc_connect=Driver%3D%7BODBC+Driver+17%7D%3BServer%3Dhost",
+            {},
+            None,
+        ),
+    ],
+)
+def test_get_connection_database_name(
+    uri: str, connect_args: dict[str, Any], expected: Optional[str]
+) -> None:
+    from superset.databases.utils import make_url_safe
+    from superset.db_engine_specs.mssql import MssqlEngineSpec
+
+    database = mock.MagicMock()
+    database.url_object = make_url_safe(uri)
+    database.connect_args = connect_args
+
+    assert MssqlEngineSpec.get_connection_database_name(database) == expected

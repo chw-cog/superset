@@ -20,7 +20,7 @@ import logging
 import re
 from datetime import datetime
 from re import Pattern
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from flask_babel import gettext as __
 from sqlalchemy import types
@@ -32,7 +32,61 @@ from superset.errors import SupersetErrorType
 from superset.models.sql_types.mssql_sql_types import GUID
 from superset.utils.core import GenericDataType
 
+if TYPE_CHECKING:
+    from superset.models.core import Database
+
 logger = logging.getLogger(__name__)
+
+# ODBC connection-string keywords that name the target database.
+ODBC_DATABASE_KEYS = {"database", "initial catalog"}
+# ODBC connection-string keywords that defer the target database to an external
+# DSN definition, making it unknowable from the URI alone.
+ODBC_DSN_KEYS = {"dsn", "filedsn"}
+
+
+def parse_odbc_connection_string(connection_string: str) -> dict[str, str]:
+    """
+    Parse an ODBC connection string into a dict of lower-cased keywords.
+
+    Values may be wrapped in braces (``Database={my db}``), in which case ``;``
+    and ``}}`` inside the braces are preserved. Later duplicates win, as in
+    the ODBC driver manager.
+    """
+    result: dict[str, str] = {}
+    i = 0
+    n = len(connection_string)
+    while i < n:
+        eq = connection_string.find("=", i)
+        if eq == -1:
+            break
+        key = connection_string[i:eq].strip().lower()
+        i = eq + 1
+        while i < n and connection_string[i] == " ":
+            i += 1
+        if i < n and connection_string[i] == "{":
+            i += 1
+            value_chars: list[str] = []
+            while i < n:
+                if connection_string[i] == "}":
+                    if i + 1 < n and connection_string[i + 1] == "}":
+                        value_chars.append("}")
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                value_chars.append(connection_string[i])
+                i += 1
+            value = "".join(value_chars)
+            semi = connection_string.find(";", i)
+            i = n if semi == -1 else semi + 1
+        else:
+            semi = connection_string.find(";", i)
+            end = n if semi == -1 else semi
+            value = connection_string[i:end].strip()
+            i = end + 1
+        if key:
+            result[key] = value
+    return result
 
 
 # Regular expressions to catch custom errors
@@ -167,6 +221,37 @@ class MssqlEngineSpec(BaseEngineSpec):
     @classmethod
     def epoch_to_dttm(cls) -> str:
         return "dateadd(S, {col}, '1970-01-01')"
+
+    @classmethod
+    def get_connection_database_name(cls, database: Database) -> str | None:
+        """
+        Return the SQL Server database the connection is bound to.
+
+        Resolution order mirrors how the drivers build the connection: explicit
+        ``connect_args`` override the URI, the URI's database component comes
+        next, and finally the ODBC ``odbc_connect`` connection string. A DSN-based
+        ODBC string without an explicit database keyword is ambiguous and yields
+        None so callers fail closed.
+        """
+        connect_args = database.connect_args
+        for key, value in connect_args.items():
+            if str(key).lower() in ODBC_DATABASE_KEYS and isinstance(value, str):
+                return value or None
+
+        url = database.url_object
+        if url.database:
+            return url.database
+
+        odbc_connect = url.query.get("odbc_connect")
+        if isinstance(odbc_connect, str) and odbc_connect:
+            parsed = parse_odbc_connection_string(odbc_connect)
+            for key in ODBC_DATABASE_KEYS:
+                if parsed.get(key):
+                    return parsed[key]
+            if ODBC_DSN_KEYS & parsed.keys():
+                return None
+
+        return None
 
     @classmethod
     def convert_dttm(

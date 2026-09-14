@@ -2147,6 +2147,31 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         return f"[{database}].[{schema}]"
 
     @staticmethod
+    def _normalize_self_database_catalog(
+        database: "Database",
+        table: "Table",
+    ) -> "Table":
+        """
+        Drop a table's catalog qualifier when it names the connection's own database.
+
+        Engines without catalog support (e.g. SQL Server) still accept
+        ``database.schema.table`` references. Superset stores datasets and
+        schema permissions for such engines without a catalog, so a reference
+        qualified with the connection's own database must be resolved as the
+        plain ``schema.table``. The qualifier is only removed when the engine spec
+        can positively identify the connection database and it matches exactly;
+        any other or unknown qualifier is left as is and fails the access check.
+        """
+        if not table.catalog or database.db_engine_spec.supports_catalog:
+            return table
+
+        own_database = database.db_engine_spec.get_connection_database_name(database)
+        if own_database is None or table.catalog != own_database:
+            return table
+
+        return Table(table=table.table, schema=table.schema, catalog=None)
+
+    @staticmethod
     def get_database_perm(database_id: int, database_name: str) -> Optional[str]:
         return f"[{database_name}].(id:{database_id})"
 
@@ -4683,6 +4708,11 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
                     None if table.schema else database.get_default_schema(table_catalog)
                 )
                 tables = {table.qualify(catalog=table_catalog, schema=schema_default)}
+
+            tables = {
+                self._normalize_self_database_catalog(database, table_)
+                for table_ in tables
+            }
 
             denied = set()
 

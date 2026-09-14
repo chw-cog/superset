@@ -1122,6 +1122,174 @@ def test_raise_for_access_query_default_schema(
     )
 
 
+def _mssql_database(mocker: MockerFixture) -> MagicMock:
+    from superset.db_engine_specs.mssql import MssqlEngineSpec
+
+    database = mocker.MagicMock()
+    database.database_name = "mssql"
+    database.db_engine_spec = MssqlEngineSpec
+    database.get_default_catalog.return_value = None
+    database.get_default_schema_for_query.return_value = "dbo"
+    database.url_object.database = "analytics"
+    database.connect_args = {}
+    return database
+
+
+def _registered_dataset_lookup(
+    mocker: MockerFixture,
+    perm: str = "[mssql].[reporting.orders](id:1)",
+) -> MagicMock:
+    """
+    Patch ``SqlaTable.query_datasources_by_name`` so that only the dataset registered
+    as ``reporting.orders`` (without a catalog, as stored for engines that don't
+    support catalogs) is found.
+    """
+    SqlaTable = mocker.patch("superset.connectors.sqla.models.SqlaTable")  # noqa: N806
+
+    def lookup(
+        database: Any,
+        datasource_name: str,
+        catalog: Optional[str] = None,
+        schema: Optional[str] = None,
+    ) -> list[MagicMock]:
+        if (datasource_name, schema, catalog) == ("orders", "reporting", None):
+            return [MagicMock(perm=perm)]
+        return []
+
+    SqlaTable.query_datasources_by_name.side_effect = lookup
+    return SqlaTable
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM reporting.orders",
+        "SELECT * FROM analytics.reporting.orders",
+        "SELECT * FROM [analytics].[reporting].[orders]",
+    ],
+)
+def test_raise_for_access_self_database_qualifier_allowed(
+    mocker: MockerFixture,
+    app_context: None,
+    sql: str,
+) -> None:
+    """
+    A reference qualified with the connection's own database resolves like the
+    schema-qualified spelling on engines without catalog support.
+    """
+    sm = SupersetSecurityManager(appbuilder)
+    mocker.patch.object(sm, "can_access_database", return_value=False)
+    mocker.patch.object(sm, "is_guest_user", return_value=False)
+    mocker.patch.object(sm, "is_editor", return_value=False)
+    can_access = mocker.patch.object(sm, "can_access", return_value=True)
+    _registered_dataset_lookup(mocker)
+    database = _mssql_database(mocker)
+
+    sm.raise_for_access(database=database, sql=sql, force_dataset_match=True)
+    can_access.assert_called_with(
+        "datasource_access", "[mssql].[reporting.orders](id:1)"
+    )
+
+    # the non-strict path builds the schema permission without the catalog
+    can_access.reset_mock()
+    sm.raise_for_access(database=database, sql=sql)
+    can_access.assert_any_call("schema_access", "[mssql].[reporting]")
+
+
+@pytest.mark.parametrize(
+    "sql, denied",
+    [
+        ("SELECT * FROM other.reporting.orders", '"other.reporting.orders"'),
+        ("SELECT * FROM Analytics.reporting.orders", '"Analytics.reporting.orders"'),
+    ],
+)
+def test_raise_for_access_other_database_qualifier_denied(
+    mocker: MockerFixture,
+    app_context: None,
+    sql: str,
+    denied: str,
+) -> None:
+    """
+    A catalog qualifier that is not exactly the connection database is kept and
+    subject to the regular checks.
+    """
+    sm = SupersetSecurityManager(appbuilder)
+    mocker.patch.object(sm, "can_access_database", return_value=False)
+    mocker.patch.object(sm, "is_guest_user", return_value=False)
+    mocker.patch.object(sm, "is_editor", return_value=False)
+    mocker.patch.object(
+        sm,
+        "can_access",
+        side_effect=lambda _perm_type, perm: perm == "[mssql].[reporting]",
+    )
+    _registered_dataset_lookup(mocker)
+    database = _mssql_database(mocker)
+
+    for force_dataset_match in (True, False):
+        with pytest.raises(SupersetSecurityException) as excinfo:
+            sm.raise_for_access(
+                database=database,
+                sql=sql,
+                force_dataset_match=force_dataset_match,
+            )
+        assert denied in str(excinfo.value)
+
+
+def test_raise_for_access_unknown_connection_database_fails_closed(
+    mocker: MockerFixture,
+    app_context: None,
+) -> None:
+    """
+    When the connection database cannot be determined the qualifier is not stripped.
+    """
+    sm = SupersetSecurityManager(appbuilder)
+    mocker.patch.object(sm, "can_access_database", return_value=False)
+    mocker.patch.object(sm, "is_guest_user", return_value=False)
+    mocker.patch.object(sm, "is_editor", return_value=False)
+    mocker.patch.object(sm, "can_access", return_value=True)
+    _registered_dataset_lookup(mocker)
+    database = _mssql_database(mocker)
+    database.url_object.database = None
+    database.url_object.query = {}
+
+    with pytest.raises(SupersetSecurityException):
+        sm.raise_for_access(
+            database=database,
+            sql="SELECT * FROM analytics.reporting.orders",
+            force_dataset_match=True,
+        )
+
+
+def test_raise_for_access_catalog_engine_keeps_qualifier(
+    mocker: MockerFixture,
+    app_context: None,
+) -> None:
+    """
+    Engines with native catalog support are unaffected by the normalization.
+    """
+    from superset.db_engine_specs.postgres import PostgresEngineSpec
+
+    sm = SupersetSecurityManager(appbuilder)
+    mocker.patch.object(sm, "can_access_database", return_value=False)
+    mocker.patch.object(sm, "is_guest_user", return_value=False)
+    mocker.patch.object(sm, "is_editor", return_value=False)
+    mocker.patch.object(sm, "can_access", return_value=True)
+    SqlaTable = _registered_dataset_lookup(mocker)  # noqa: N806
+    database = _mssql_database(mocker)
+    database.db_engine_spec = PostgresEngineSpec
+    database.get_default_catalog.return_value = "analytics"
+
+    with pytest.raises(SupersetSecurityException):
+        sm.raise_for_access(
+            database=database,
+            sql="SELECT * FROM analytics.reporting.orders",
+            force_dataset_match=True,
+        )
+    SqlaTable.query_datasources_by_name.assert_called_with(
+        database, "orders", schema="reporting", catalog="analytics"
+    )
+
+
 def test_raise_for_access_jinja_sql(mocker: MockerFixture, app_context: None) -> None:
     """
     Test that Jinja gets rendered to SQL.
