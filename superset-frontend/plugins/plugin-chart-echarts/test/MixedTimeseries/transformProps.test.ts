@@ -1711,6 +1711,33 @@ describe('weekly x-axis tick alignment', () => {
     expect(xAxis.axisLabel.customValues).toBeUndefined();
     expect(xAxis.axisTick?.customValues).toBeUndefined();
   });
+
+  test('labels every daily bucket from both queries when the interval is "All"', () => {
+    const DAY_MS = 24 * 3600 * 1000;
+    const daysA = Array.from(
+      { length: 10 },
+      (_, i) => Date.UTC(2026, 6, 1) + i * DAY_MS,
+    );
+    // Query B extends past query A; each of its buckets needs a label too.
+    const daysB = Array.from(
+      { length: 10 },
+      (_, i) => Date.UTC(2026, 6, 8) + i * DAY_MS,
+    );
+    const union = [...new Set([...daysA, ...daysB])].sort((a, b) => a - b);
+
+    const { xAxis } = transformProps(
+      weeklyChartProps(daysA, daysB, {
+        timeGrainSqla: TimeGranularity.DAY,
+        xAxisLabelInterval: '0',
+      }),
+    ).echartOptions as any;
+
+    expect(xAxis.type).toBe(AxisType.Time);
+    expect(xAxis.axisLabel.customValues).toEqual(union);
+    expect(xAxis.axisTick.customValues).toEqual(union);
+    expect(xAxis.axisLabel.hideOverlap).toBe(false);
+    expect(xAxis.axisLabel.showMaxLabel).toBeUndefined();
+  });
 });
 
 function transformWithChrome(

@@ -3362,6 +3362,112 @@ describe('weekly x-axis tick alignment', () => {
   });
 });
 
+describe('x-axis label interval "All" on a temporal axis', () => {
+  const DAY_MS = 24 * 3600 * 1000;
+  const DAYS = Array.from(
+    { length: 31 },
+    (_, i) => Date.UTC(2026, 6, 1) + i * DAY_MS,
+  );
+  const WEEK_MS = 7 * DAY_MS;
+  const MANY_MONDAYS = Array.from(
+    { length: 261 },
+    (_, i) => Date.UTC(2021, 0, 4) + i * WEEK_MS,
+  );
+
+  const temporalChartProps = (
+    timestamps: number[],
+    formDataOverrides: Partial<EchartsTimeseriesFormData> = {},
+    annotationData?: AnnotationData,
+  ) =>
+    createTestChartProps({
+      annotationData,
+      formData: {
+        granularity_sqla: 'ds',
+        timeGrainSqla: TimeGranularity.DAY,
+        xAxisTimeFormat: '%m-%d',
+        xAxisLabelInterval: '0',
+        ...formDataOverrides,
+      },
+      queriesData: [
+        createTestQueryData(
+          timestamps.map((__timestamp, i) => ({ __timestamp, sales: 100 + i })),
+          {
+            colnames: ['__timestamp', 'sales'],
+            coltypes: [GenericDataType.Temporal, GenericDataType.Numeric],
+            ...(annotationData && { annotation_data: annotationData }),
+          },
+        ),
+      ],
+    });
+
+  test('labels every daily bucket without overlap thinning', () => {
+    const { xAxis } = transformProps(temporalChartProps(DAYS))
+      .echartOptions as any;
+
+    expect(xAxis.type).toBe(AxisType.Time);
+    expect(xAxis.axisLabel.customValues).toEqual(DAYS);
+    expect(xAxis.axisTick.customValues).toEqual(DAYS);
+    expect(xAxis.axisLabel.hideOverlap).toBe(false);
+    // Every bucket has its own label, so the boundary labels are not forced
+    // and the formatter is the plain time formatter (no spacing pass that
+    // would blank labels back out).
+    expect(xAxis.axisLabel.showMaxLabel).toBeUndefined();
+    expect(xAxis.axisLabel.formatter(DAYS[0])).toBe('07-01');
+    expect(xAxis.axisLabel.formatter(DAYS[1])).toBe('07-02');
+    expect(xAxis.axisLabel.formatter(DAYS[2])).toBe('07-03');
+  });
+
+  test('does not cap a long weekly range', () => {
+    const { xAxis } = transformProps(
+      temporalChartProps(MANY_MONDAYS, {
+        timeGrainSqla: TimeGranularity.WEEK_STARTING_MONDAY,
+      }),
+    ).echartOptions as any;
+
+    expect(xAxis.axisLabel.customValues).toEqual(MANY_MONDAYS);
+    expect(xAxis.axisTick.customValues).toEqual(MANY_MONDAYS);
+    expect(xAxis.axisLabel.hideOverlap).toBe(false);
+  });
+
+  test('survives label rotation and zoom', () => {
+    [{ xAxisLabelRotation: 45 }, { zoomable: true }].forEach(overrides => {
+      const { xAxis } = transformProps(temporalChartProps(DAYS, overrides))
+        .echartOptions as any;
+
+      expect(xAxis.axisLabel.customValues).toEqual(DAYS);
+      expect(xAxis.axisLabel.hideOverlap).toBe(false);
+    });
+  });
+
+  test('keeps the temporal axis (no categorical conversion)', () => {
+    const { xAxis } = transformProps(temporalChartProps(DAYS))
+      .echartOptions as any;
+
+    expect(xAxis.type).toBe(AxisType.Time);
+    expect(xAxis.minInterval).toBe(DAY_MS);
+  });
+
+  test('Auto keeps the automatic behaviour', () => {
+    const { xAxis } = transformProps(
+      temporalChartProps(DAYS, { xAxisLabelInterval: 'auto' }),
+    ).echartOptions as any;
+
+    expect(xAxis.axisLabel.customValues).toBeUndefined();
+    expect(xAxis.axisTick?.customValues).toBeUndefined();
+    expect(xAxis.axisLabel.hideOverlap).toBe(false);
+    expect(xAxis.axisLabel.showMaxLabel).toBe(true);
+  });
+
+  test('falls back to automatic ticks without a time grain', () => {
+    const { xAxis } = transformProps(
+      temporalChartProps(DAYS, { timeGrainSqla: undefined }),
+    ).echartOptions as any;
+
+    expect(xAxis.axisLabel.customValues).toBeUndefined();
+    expect(xAxis.axisLabel.hideOverlap).toBe(true);
+  });
+});
+
 describe('tooltip for metrics whose labels end in forecast suffixes', () => {
   const marker = '<span style="background-color:#1f77b4;"></span>';
   const seriesIds = ['ci__yhat', 'ci__yhat_lower', 'ci__yhat_upper'];

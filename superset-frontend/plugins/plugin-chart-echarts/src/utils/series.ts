@@ -1007,24 +1007,37 @@ function parseTemporalString(value: string): number {
 }
 
 /**
+ * The X Axis Label Interval control's "All" choice. ECharts only honors
+ * `axisLabel.interval` on category axes, so a temporal axis has to pin its
+ * ticks to the data buckets explicitly to show every label.
+ */
+export function showsAllAxisLabels(
+  xAxisLabelInterval: number | string | undefined,
+): boolean {
+  return String(xAxisLabelInterval) === '0';
+}
+
+/**
  * Bucket timestamps a temporal axis should tick on, or undefined to let ECharts
  * choose.
  *
  * ECharts generates time ticks from a calendar ladder with no week unit, so for
  * weekly data it steps days from the 1st of each month instead: labels drift
  * across weekdays and snap to month starts (#17226). Coarser grains already land
- * on their data and keep ECharts' calendar-nice labels.
+ * on their data and keep ECharts' calendar-nice labels, unless every bucket is
+ * requested (`allBuckets`), in which case any grain pins to its data.
  */
 export function getTemporalTickValues(
   data: DataRecord[],
   xAxisLabel: string,
   xAxisType: AxisType,
   timeGrain?: string,
+  allBuckets: boolean = false,
 ): number[] | undefined {
   if (
     xAxisType !== AxisType.Time ||
     !timeGrain ||
-    !WEEKLY_TIME_GRAINS.has(timeGrain)
+    (!allBuckets && !WEEKLY_TIME_GRAINS.has(timeGrain))
   ) {
     return undefined;
   }
@@ -1057,13 +1070,14 @@ export function resolveTemporalTickValues(
   xAxisType: AxisType,
   timeGrain: string | undefined,
   annotationLayers: AnnotationLayer[],
+  allBuckets: boolean = false,
 ): number[] | undefined {
   const hasTimeseriesAnnotation = annotationLayers.some(
     layer => layer.show && isTimeseriesAnnotationLayer(layer),
   );
   return hasTimeseriesAnnotation
     ? undefined
-    : getTemporalTickValues(data, xAxisLabel, xAxisType, timeGrain);
+    : getTemporalTickValues(data, xAxisLabel, xAxisType, timeGrain, allBuckets);
 }
 
 // Unlike axisLabel, axisTick has no overlap-based thinning, so pinning it to
@@ -1097,6 +1111,10 @@ export function capTickMarks(
  * instead — zooming lets the user reach any bucket, but customValues never
  * recomputes on dataZoom, so a capped set there would freeze the visible
  * labels to the pre-zoom subset.
+ *
+ * With `showAllLabels` (the interval control's "All" on a pinned axis) every
+ * bucket gets both a tick and a label: nothing is capped and hideOverlap is
+ * off, since the user asked for every label even if they crowd.
  */
 export function getTemporalAxisTickConfig(
   temporalTickValues: number[] | undefined,
@@ -1107,23 +1125,27 @@ export function getTemporalAxisTickConfig(
   formatter: unknown,
   isHorizontal: boolean = false,
   zoomable: boolean = false,
+  showAllLabels: boolean = false,
 ): {
   axisLabel: Record<string, unknown>;
   axisTick?: { customValues: number[] };
 } {
-  const cappedTickValues = temporalTickValues
-    ? capTickMarks(temporalTickValues)
-    : undefined;
+  const pinAllLabels = showAllLabels && !!temporalTickValues;
+  const cappedTickValues =
+    temporalTickValues && !pinAllLabels
+      ? capTickMarks(temporalTickValues)
+      : temporalTickValues;
   const labelCustomValues = zoomable ? temporalTickValues : cappedTickValues;
   return {
     axisLabel: {
       // Pinned ticks label every bucket, which does crowd, so thinning
-      // always wins there.
-      hideOverlap:
-        !!temporalTickValues ||
-        (showMaxLabel
-          ? false
-          : !(xAxisType === AxisType.Time && xAxisLabelRotation !== 0)),
+      // always wins there unless every label was explicitly requested.
+      hideOverlap: pinAllLabels
+        ? false
+        : !!temporalTickValues ||
+          (showMaxLabel
+            ? false
+            : !(xAxisType === AxisType.Time && xAxisLabelRotation !== 0)),
       formatter,
       rotate: xAxisLabelRotation,
       interval: xAxisLabelInterval,

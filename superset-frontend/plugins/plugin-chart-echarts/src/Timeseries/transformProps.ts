@@ -95,6 +95,7 @@ import {
   getLegendProps,
   getMinAndMaxFromBounds,
   getTemporalAxisTickConfig,
+  showsAllAxisLabels,
   resolveTemporalTickValues,
 } from '../utils/series';
 import { resolveLegendLayout } from '../utils/legendLayout';
@@ -1370,10 +1371,25 @@ export default function transformProps(
   // the bottom of the chart (pixel width, character width); a horizontal
   // orientation chart puts the time axis on the side instead, so it falls
   // back to dedup-only there.
+  const showAllLabels = showsAllAxisLabels(xAxisLabelInterval);
+  const temporalTickValues = resolveTemporalTickValues(
+    rebasedData,
+    xAxisLabel,
+    xAxisType,
+    resolvedTimeGrain,
+    annotationLayers,
+    showAllLabels,
+  );
+  // Every bucket already carries its own label when the axis is pinned to
+  // all of them, so neither the forced boundary labels nor the formatter's
+  // spacing pass has anything left to add or thin.
+  const pinAllLabels = showAllLabels && !!temporalTickValues;
+
   const showMaxLabel =
     xAxisType === AxisType.Time &&
     xAxisLabelRotation === 0 &&
-    !!resolvedTimeGrain;
+    !!resolvedTimeGrain &&
+    !pinAllLabels;
   const deduplicatedFormatter = showMaxLabel
     ? isHorizontal
       ? createDedupXAxisFormatter(xAxisFormatter)
@@ -1387,14 +1403,6 @@ export default function transformProps(
         )
     : xAxisFormatter;
 
-  const temporalTickValues = resolveTemporalTickValues(
-    rebasedData,
-    xAxisLabel,
-    xAxisType,
-    resolvedTimeGrain,
-    annotationLayers,
-  );
-
   const temporalAxisTickConfig = getTemporalAxisTickConfig(
     temporalTickValues,
     showMaxLabel,
@@ -1404,6 +1412,7 @@ export default function transformProps(
     deduplicatedFormatter,
     isHorizontal,
     zoomable,
+    showAllLabels,
   );
 
   let xAxis: any = {
